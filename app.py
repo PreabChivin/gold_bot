@@ -1,15 +1,22 @@
-import os
-from dotenv import load_dotenv
 
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-
 from services.price_service import get_prices
+import os
+from dotenv import load_dotenv
 
-# Load .env for local development
 load_dotenv()
 
+print("=== DEBUG: Environment Variables ===")
+print(f"Current working directory: {os.getcwd()}")
+print(f".env file exists? {os.path.exists('.env')}")
+print(f"BOT_TOKEN from os.getenv: {os.getenv('BOT_TOKEN')}")
+print("===================================")
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN is not set! ...")
 
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN is not set! Please add it to your .env file (local) or Variables (Railway).")
