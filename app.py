@@ -9,9 +9,10 @@ from io import BytesIO
 from telegram.ext import Application, CommandHandler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# ── Persistent subscriptions ──────────────────────────────
+# ── Persistent data ───────────────────────────────────────
 SUBS_FILE = "subscribed_chats.json"
 HISTORY_FILE = "price_history.json"
+ALERTS_FILE = "alerts.json"
 
 def load_chats():
     if os.path.exists(SUBS_FILE):
@@ -32,6 +33,16 @@ def load_history():
 def save_history(history):
     with open(HISTORY_FILE, "w") as f:
         json.dump(history, f)
+
+def load_alerts():
+    if os.path.exists(ALERTS_FILE):
+        with open(ALERTS_FILE, "r") as f:
+            return json.load(f)
+    return []
+
+def save_alerts(alerts):
+    with open(ALERTS_FILE, "w") as f:
+        json.dump(alerts, f)
 
 subscribed_chats = load_chats()
 
@@ -62,11 +73,11 @@ def record_prices():
         "gold": prices["gold"],
         "silver": prices["silver"]
     })
-    # Keep only last 30 days
     cutoff = datetime.utcnow() - timedelta(days=30)
     history = [h for h in history if datetime.fromisoformat(h["timestamp"]) > cutoff]
     save_history(history)
 
+# ── Chart ─────────────────────────────────────────────────
 def generate_chart(days):
     history = load_history()
     if not history:
@@ -109,12 +120,49 @@ def generate_chart(days):
     ax2.grid(True, color="#333", linestyle="--", alpha=0.5)
 
     plt.tight_layout(pad=2.0)
-
     buf = BytesIO()
     plt.savefig(buf, format="png", facecolor=fig.get_facecolor())
     buf.seek(0)
     plt.close()
     return buf
+
+# ── Alert checker ─────────────────────────────────────────
+async def check_alerts(app):
+    prices = get_prices()
+    if not prices:
+        return
+
+    alerts = load_alerts()
+    remaining = []
+
+    for alert in alerts:
+        metal = alert["metal"]
+        direction = alert["direction"]
+        target = alert["target"]
+        chat_id = alert["chat_id"]
+        current = prices[metal]
+
+        triggered = (direction == "above" and current >= target) or \
+                    (direction == "below" and current <= target)
+
+        if triggered:
+            emoji = "🥇" if metal == "gold" else "🥈"
+            arrow = "📈" if direction == "above" else "📉"
+            try:
+                await app.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"🚨 Price Alert Triggered!\n\n"
+                        f"{emoji} {metal.capitalize()} is now ${current:.2f}\n"
+                        f"{arrow} Your target: {direction} ${target:.2f}"
+                    )
+                )
+            except Exception as e:
+                print(f"⚠️ Failed to send alert to {chat_id}: {e}")
+        else:
+            remaining.append(alert)
+
+    save_alerts(remaining)
 
 # ── Handlers ──────────────────────────────────────────────
 async def start(update, context):
@@ -128,7 +176,14 @@ async def start(update, context):
         "/unsubscribe - Stop auto updates\n"
         "/chart 1 - Chart for last 24 hours\n"
         "/chart 7 - Chart for last 7 days\n"
-        "/chart 30 - Chart for last 30 days"
+        "/chart 30 - Chart for last 30 days\n"
+        "/setalert gold above 4800 - Alert when gold > $4800\n"
+        "/setalert gold below 4700 - Alert when gold < $4700\n"
+        "/setalert silver above 80 - Alert when silver > $80\n"
+        "/setalert silver below 70 - Alert when silver < $70\n"
+        "/listalerts - View your active alerts\n"
+        "/cancelalert 1 - Cancel alert number 1\n"
+        "/cancelalerts - Cancel all your alerts"
     )
 
 async def price(update, context):
@@ -160,7 +215,6 @@ async def chart(update, context):
             "/chart 30 - Last 30 days"
         )
         return
-
     try:
         days = int(context.args[0])
         if days not in [1, 7, 30]:
@@ -170,7 +224,6 @@ async def chart(update, context):
         return
 
     await update.message.reply_text("📊 Generating chart...")
-
     buf = generate_chart(days)
     if not buf:
         await update.message.reply_text(
@@ -185,8 +238,109 @@ async def chart(update, context):
         caption=f"📈 Gold & Silver — Last {period}"
     )
 
+async def setalert(update, context):
+    usage = (
+        "📋 Usage:\n"
+        "/setalert gold above 4800\n"
+        "/setalert gold below 4700\n"
+        "/setalert silver above 80\n"
+        "/setalert silver below 70"
+    )
+    if len(context.args) != 3:
+        await update.message.reply_text(usage)
+        return
+
+    metal = context.args[0].lower()
+    direction = context.args[1].lower()
+
+    if metal not in ["gold", "silver"]:
+        await update.message.reply_text("❌ Metal must be 'gold' or 'silver'")
+        return
+    if direction not in ["above", "below"]:
+        await update.message.reply_text("❌ Direction must be 'above' or 'below'")
+        return
+    try:
+        target = float(context.args[2])
+    except ValueError:
+        await update.message.reply_text("❌ Price must be a number e.g. 4800")
+        return
+
+    alerts = load_alerts()
+    alerts.append({
+        "chat_id": update.effective_chat.id,
+        "metal": metal,
+        "direction": direction,
+        "target": target
+    })
+    save_alerts(alerts)
+
+    emoji = "🥇" if metal == "gold" else "🥈"
+    arrow = "📈" if direction == "above" else "📉"
+    await update.message.reply_text(
+        f"✅ Alert set!\n\n"
+        f"{emoji} {metal.capitalize()} {arrow} {direction} ${target:.2f}\n\n"
+        f"You'll be notified when the price hits your target."
+    )
+
+async def listalerts(update, context):
+    alerts = load_alerts()
+    user_alerts = [a for a in alerts if a["chat_id"] == update.effective_chat.id]
+
+    if not user_alerts:
+        await update.message.reply_text("📋 You have no active alerts.\nUse /setalert to create one.")
+        return
+
+    lines = ["📋 Your active alerts:\n"]
+    for i, a in enumerate(user_alerts, 1):
+        emoji = "🥇" if a["metal"] == "gold" else "🥈"
+        arrow = "📈" if a["direction"] == "above" else "📉"
+        lines.append(f"{i}. {emoji} {a['metal'].capitalize()} {arrow} {a['direction']} ${a['target']:.2f}")
+
+    lines.append("\n💡 Cancel one: /cancelalert 1")
+    lines.append("💡 Cancel all: /cancelalerts")
+    await update.message.reply_text("\n".join(lines))
+
+async def cancelalert(update, context):
+    if not context.args:
+        await update.message.reply_text("❌ Usage: /cancelalert 1\nUse /listalerts to see alert numbers.")
+        return
+
+    try:
+        index = int(context.args[0]) - 1
+        if index < 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("❌ Please provide a valid alert number e.g. /cancelalert 1")
+        return
+
+    alerts = load_alerts()
+    user_alerts = [a for a in alerts if a["chat_id"] == update.effective_chat.id]
+
+    if index >= len(user_alerts):
+        await update.message.reply_text(f"❌ Alert #{index + 1} not found. Use /listalerts to see your alerts.")
+        return
+
+    target_alert = user_alerts[index]
+    alerts.remove(target_alert)
+    save_alerts(alerts)
+
+    emoji = "🥇" if target_alert["metal"] == "gold" else "🥈"
+    arrow = "📈" if target_alert["direction"] == "above" else "📉"
+    await update.message.reply_text(
+        f"🗑 Alert cancelled:\n\n"
+        f"{emoji} {target_alert['metal'].capitalize()} {arrow} {target_alert['direction']} ${target_alert['target']:.2f}"
+    )
+
+async def cancelalerts(update, context):
+    alerts = load_alerts()
+    remaining = [a for a in alerts if a["chat_id"] != update.effective_chat.id]
+    save_alerts(remaining)
+    await update.message.reply_text("🗑 All your alerts have been cancelled.")
+
+# ── Scheduled job ─────────────────────────────────────────
 async def send_scheduled_prices(app):
-    record_prices()  # Save price to history
+    record_prices()
+    await check_alerts(app)
     prices = get_prices()
     if not prices:
         return
@@ -223,6 +377,10 @@ def main():
     app.add_handler(CommandHandler("subscribe", subscribe))
     app.add_handler(CommandHandler("unsubscribe", unsubscribe))
     app.add_handler(CommandHandler("chart", chart))
+    app.add_handler(CommandHandler("setalert", setalert))
+    app.add_handler(CommandHandler("listalerts", listalerts))
+    app.add_handler(CommandHandler("cancelalert", cancelalert))
+    app.add_handler(CommandHandler("cancelalerts", cancelalerts))
 
     print("✅ Bot is running...")
     app.run_polling()
