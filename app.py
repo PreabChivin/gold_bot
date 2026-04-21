@@ -1,113 +1,75 @@
+from telegram.ext import Application, CommandHandler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import os
-import logging
-from dotenv import load_dotenv
 
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-)
+# Store chat IDs that want scheduled updates
+subscribed_chats = set()
 
-from services.price_service import get_prices
-
-import sys
-import socket
-
-# Prevent multiple instances
-lock_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-try:
-    lock_socket.bind(("localhost", 47200))  # any unused port
-except OSError:
-    print("❌ Bot is already running! Exiting.")
-    sys.exit(1)
-    
-# ================== LOAD ENV ==================
-load_dotenv()
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN is not set in .env")
-
-# ================== LOGGING ==================
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-
-# ================== GLOBAL ==================
-last_price = None
-
-
-# ================== COMMANDS ==================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-
+async def start(update, context):
+    subscribed_chats.add(update.effective_chat.id)
     await update.message.reply_text(
-        "🤖 Gold & Silver Bot Ready!\n\n"
+        "👋 Welcome to Gold & Silver Bot!\n\n"
         "Commands:\n"
-        "/price - Show current price\n"
-        "🔔 Auto alert enabled (every 5 min)"
+        "/price - Get current prices\n"
+        "/subscribe - Get auto updates every hour\n"
+        "/unsubscribe - Stop auto updates"
     )
 
-    # Schedule alert job (every 5 minutes)
-    context.job_queue.run_repeating(
-        check_price,
-        interval=300,
-        first=10,
-        chat_id=chat_id
+async def subscribe(update, context):
+    subscribed_chats.add(update.effective_chat.id)
+    await update.message.reply_text("✅ Subscribed! You'll get price updates every hour.")
+
+async def unsubscribe(update, context):
+    subscribed_chats.discard(update.effective_chat.id)
+    await update.message.reply_text("❌ Unsubscribed from auto updates.")
+
+async def send_scheduled_prices(app):
+    prices = get_prices()
+    if not prices:
+        return
+    message = (
+        f"🕐 Scheduled Update\n\n"
+        f"🥇 Gold: ${prices['gold']:.2f}\n"
+        f"🥈 Silver: ${prices['silver']:.4f}"
     )
+    for chat_id in subscribed_chats:
+        try:
+            await app.bot.send_message(chat_id=chat_id, text=message)
+        except Exception as e:
+            print(f"⚠️ Failed to send to {chat_id}: {e}")
 
-
-async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("COMMAND RECEIVED")
-
-    data = get_prices()
-    print("DATA:", data)
-
-    if not data:
+async def price(update, context):
+    prices = get_prices()
+    if not prices:
         await update.message.reply_text("❌ API Error")
         return
-
     await update.message.reply_text(
-        f"Gold: {data['gold']}\nSilver: {data['silver']}"
+        f"🥇 Gold: ${prices['gold']:.2f}\n"
+        f"🥈 Silver: ${prices['silver']:.4f}"
     )
 
+def main():
+    token = os.getenv("BOT_TOKEN")
+    app = Application.builder().token(token).build()
 
-# ================== ALERT JOB ==================
-async def check_price(context: ContextTypes.DEFAULT_TYPE):
-    global last_price
-
-    data = get_prices()
-    if not data:
-        return
-
-    if last_price:
-        change = ((data["gold"] - last_price["gold"]) / last_price["gold"]) * 100
-
-        if abs(change) >= 1:  # 1% threshold
-            await context.bot.send_message(
-                chat_id=context.job.chat_id,
-                text=(
-                    f"⚠️ Gold price changed!\n"
-                    f"📊 Change: {round(change, 2)}%\n"
-                    f"💰 Now: ${data['gold']} / oz"
-                )
-            )
-
-    last_price = data
-
-
-# ================== MAIN ==================
-if __name__ == "__main__":
-    print("🚀 Starting Gold & Silver Bot...")
-
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Commands
+    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("price", price))
+    app.add_handler(CommandHandler("subscribe", subscribe))
+    app.add_handler(CommandHandler("unsubscribe", unsubscribe))
+
+    # Scheduler — runs every hour
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        send_scheduled_prices,
+        trigger="interval",
+        hours=1,
+        args=[app]
+    )
+    scheduler.start()
 
     print("✅ Bot is running...")
     app.run_polling()
+
+if __name__ == "__main__":
+    main()
