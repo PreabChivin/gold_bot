@@ -50,15 +50,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("COMMAND RECEIVED")
+
     data = get_prices()
+    print("DATA:", data)
 
     if not data:
-        await update.message.reply_text("❌ Failed to fetch price from API")
+        await update.message.reply_text("❌ API Error")
         return
 
     await update.message.reply_text(
-        f"💰 Gold: ${data['gold']} / oz\n"
-        f"🥈 Silver: ${data['silver']} / oz"
+        f"Gold: {data['gold']}\nSilver: {data['silver']}"
     )
 
 
