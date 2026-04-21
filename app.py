@@ -2,11 +2,16 @@ import os
 import json
 import requests
 import time
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from datetime import datetime, timedelta
+from io import BytesIO
 from telegram.ext import Application, CommandHandler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # ── Persistent subscriptions ──────────────────────────────
 SUBS_FILE = "subscribed_chats.json"
+HISTORY_FILE = "price_history.json"
 
 def load_chats():
     if os.path.exists(SUBS_FILE):
@@ -17,6 +22,16 @@ def load_chats():
 def save_chats():
     with open(SUBS_FILE, "w") as f:
         json.dump(list(subscribed_chats), f)
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, "r") as f:
+            return json.load(f)
+    return []
+
+def save_history(history):
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f)
 
 subscribed_chats = load_chats()
 
@@ -37,6 +52,70 @@ def get_prices(retries=3, delay=2):
     print("❌ All retries failed")
     return None
 
+def record_prices():
+    prices = get_prices()
+    if not prices:
+        return
+    history = load_history()
+    history.append({
+        "timestamp": datetime.utcnow().isoformat(),
+        "gold": prices["gold"],
+        "silver": prices["silver"]
+    })
+    # Keep only last 30 days
+    cutoff = datetime.utcnow() - timedelta(days=30)
+    history = [h for h in history if datetime.fromisoformat(h["timestamp"]) > cutoff]
+    save_history(history)
+
+def generate_chart(days):
+    history = load_history()
+    if not history:
+        return None
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    filtered = [h for h in history if datetime.fromisoformat(h["timestamp"]) > cutoff]
+
+    if len(filtered) < 2:
+        return None
+
+    timestamps = [datetime.fromisoformat(h["timestamp"]) for h in filtered]
+    gold_prices = [h["gold"] for h in filtered]
+    silver_prices = [h["silver"] for h in filtered]
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7))
+    fig.patch.set_facecolor("#1a1a2e")
+
+    for ax in [ax1, ax2]:
+        ax.set_facecolor("#16213e")
+        ax.tick_params(colors="white")
+        ax.xaxis.label.set_color("white")
+        ax.yaxis.label.set_color("white")
+        ax.title.set_color("white")
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#444")
+
+    ax1.plot(timestamps, gold_prices, color="#FFD700", linewidth=2)
+    ax1.set_title("🥇 Gold (USD)")
+    ax1.set_ylabel("Price (USD)")
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M"))
+    ax1.tick_params(axis="x", rotation=30)
+    ax1.grid(True, color="#333", linestyle="--", alpha=0.5)
+
+    ax2.plot(timestamps, silver_prices, color="#C0C0C0", linewidth=2)
+    ax2.set_title("🥈 Silver (USD)")
+    ax2.set_ylabel("Price (USD)")
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M"))
+    ax2.tick_params(axis="x", rotation=30)
+    ax2.grid(True, color="#333", linestyle="--", alpha=0.5)
+
+    plt.tight_layout(pad=2.0)
+
+    buf = BytesIO()
+    plt.savefig(buf, format="png", facecolor=fig.get_facecolor())
+    buf.seek(0)
+    plt.close()
+    return buf
+
 # ── Handlers ──────────────────────────────────────────────
 async def start(update, context):
     subscribed_chats.add(update.effective_chat.id)
@@ -46,7 +125,10 @@ async def start(update, context):
         "Commands:\n"
         "/price - Get current prices\n"
         "/subscribe - Get auto updates every 15 minutes\n"
-        "/unsubscribe - Stop auto updates"
+        "/unsubscribe - Stop auto updates\n"
+        "/chart 1 - Chart for last 24 hours\n"
+        "/chart 7 - Chart for last 7 days\n"
+        "/chart 30 - Chart for last 30 days"
     )
 
 async def price(update, context):
@@ -69,7 +151,42 @@ async def unsubscribe(update, context):
     save_chats()
     await update.message.reply_text("❌ Unsubscribed from auto updates.")
 
+async def chart(update, context):
+    if not context.args:
+        await update.message.reply_text(
+            "📊 Usage:\n"
+            "/chart 1 - Last 24 hours\n"
+            "/chart 7 - Last 7 days\n"
+            "/chart 30 - Last 30 days"
+        )
+        return
+
+    try:
+        days = int(context.args[0])
+        if days not in [1, 7, 30]:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("❌ Please use /chart 1, /chart 7, or /chart 30")
+        return
+
+    await update.message.reply_text("📊 Generating chart...")
+
+    buf = generate_chart(days)
+    if not buf:
+        await update.message.reply_text(
+            "⚠️ Not enough data yet. The bot collects prices every 15 minutes. "
+            "Please try again later."
+        )
+        return
+
+    period = {1: "24 Hours", 7: "7 Days", 30: "30 Days"}[days]
+    await update.message.reply_photo(
+        photo=buf,
+        caption=f"📈 Gold & Silver — Last {period}"
+    )
+
 async def send_scheduled_prices(app):
+    record_prices()  # Save price to history
     prices = get_prices()
     if not prices:
         return
@@ -105,6 +222,7 @@ def main():
     app.add_handler(CommandHandler("price", price))
     app.add_handler(CommandHandler("subscribe", subscribe))
     app.add_handler(CommandHandler("unsubscribe", unsubscribe))
+    app.add_handler(CommandHandler("chart", chart))
 
     print("✅ Bot is running...")
     app.run_polling()
