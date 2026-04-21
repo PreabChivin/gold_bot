@@ -11,6 +11,17 @@ from telegram.ext import (
 
 from services.price_service import get_prices
 
+import sys
+import socket
+
+# Prevent multiple instances
+lock_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+try:
+    lock_socket.bind(("localhost", 47200))  # any unused port
+except OSError:
+    print("❌ Bot is already running! Exiting.")
+    sys.exit(1)
+    
 # ================== LOAD ENV ==================
 load_dotenv()
 
