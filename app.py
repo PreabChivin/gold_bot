@@ -48,17 +48,7 @@ async def price(update, context):
         f"🥈 Silver: ${prices['silver']:.4f}"
     )
 
-def main():
-    token = os.getenv("BOT_TOKEN")
-    app = Application.builder().token(token).build()
-
-    # Handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("price", price))
-    app.add_handler(CommandHandler("subscribe", subscribe))
-    app.add_handler(CommandHandler("unsubscribe", unsubscribe))
-
-    # Scheduler — runs every hour
+async def post_init(app):
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         send_scheduled_prices,
@@ -67,6 +57,17 @@ def main():
         args=[app]
     )
     scheduler.start()
+    print("✅ Scheduler started")
+
+def main():
+    token = os.getenv("BOT_TOKEN")
+    app = Application.builder().token(token).post_init(post_init).build()
+
+    # Handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("price", price))
+    app.add_handler(CommandHandler("subscribe", subscribe))
+    app.add_handler(CommandHandler("unsubscribe", unsubscribe))
 
     print("✅ Bot is running...")
     app.run_polling()
