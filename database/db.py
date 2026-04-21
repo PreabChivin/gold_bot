@@ -1,5 +1,3 @@
-# database/db.py
-
 import sqlite3
 
 conn = sqlite3.connect("bot.db", check_same_thread=False)
