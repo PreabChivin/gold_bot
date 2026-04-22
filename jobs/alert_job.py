@@ -1,22 +1,21 @@
-# jobs/scheduler.py
-
-import time
 from services.price_service import get_prices
 
 last_price = None
 
-def run_scheduler(bot):
+async def check_price(context):
     global last_price
 
-    while True:
-        data = get_prices()
+    data = get_prices()
+    if not data:
+        return
 
-        if last_price:
-            change = abs(data["gold"] - last_price["gold"])
+    if last_price:
+        change = ((data["gold"] - last_price["gold"]) / last_price["gold"]) * 100
 
-            if change > 1:  # threshold
-                bot.send_message(chat_id=YOUR_CHAT_ID,
-                                 text=f"⚠️ Gold changed: {data['gold']}")
+        if abs(change) >= 1:  # 1% threshold
+            await context.bot.send_message(
+                chat_id=context.job.chat_id,
+                text=f"⚠️ Gold changed {round(change,2)}%\nNow: ${data['gold']}"
+            )
 
-        last_price = data
-        time.sleep(300)  # every 5 min
+    last_price = data
