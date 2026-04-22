@@ -2,7 +2,7 @@ import requests
 import time
 
 def get_prices(retries=3, delay=2):
-    headers = {"x-access-token": "goldapi-lgysmo8q1zm3-io"}
+    headers = {"x-access-token": "goldapi-74cd78b1bdb541a5b2ba9ecb0b26a939-io"}
 
     for attempt in range(retries):
         try:
