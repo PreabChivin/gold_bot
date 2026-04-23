@@ -1,28 +1,62 @@
+import logging
+import os
+
 import requests
-import time
+from dotenv import load_dotenv
 
-def get_prices(retries=3, delay=2):
-    headers = {"x-access-token": "goldapi-ba1faa4ac99b7e1a4c2ca1a088026e04-io"}
+load_dotenv()
 
-    for attempt in range(retries):
+LOGGER = logging.getLogger(__name__)
+
+API_BASE_URL = "https://www.goldapi.io/api"
+REQUEST_TIMEOUT = 15
+
+
+def get_goldapi_key() -> str | None:
+    return os.getenv("GOLDAPI_KEY") or os.getenv("GOLD_API_KEY")
+
+
+def get_prices() -> dict[str, float] | None:
+    api_key = get_goldapi_key()
+    if not api_key:
+        LOGGER.error("GOLDAPI_KEY is not set")
+        return None
+
+    headers = {
+        "x-access-token": api_key,
+        "Content-Type": "application/json",
+    }
+
+    prices: dict[str, float] = {}
+
+    for metal in ("XAU", "XAG"):
         try:
-            gold_res = requests.get("https://www.goldapi.io/api/XAU/USD", headers=headers, timeout=10)
-            silver_res = requests.get("https://www.goldapi.io/api/XAG/USD", headers=headers, timeout=10)
+            response = requests.get(
+                f"{API_BASE_URL}/{metal}/USD",
+                headers=headers,
+                timeout=REQUEST_TIMEOUT,
+            )
+            payload = response.json()
+        except requests.RequestException as exc:
+            LOGGER.error("Request failed for %s: %s", metal, exc)
+            return None
+        except ValueError:
+            LOGGER.error("Invalid JSON response for %s", metal)
+            return None
 
-            print("Gold status:", gold_res.status_code)
-            print("Gold raw:", gold_res.text)
-            print("Silver status:", silver_res.status_code)
-            print("Silver raw:", silver_res.text)
+        if response.status_code != 200:
+            LOGGER.error(
+                "GoldAPI rejected %s with status %s: %s",
+                metal,
+                response.status_code,
+                payload,
+            )
+            return None
 
-            gold_price = gold_res.json()["price"]
-            silver_price = silver_res.json()["price"]
+        if "price" not in payload:
+            LOGGER.error("Missing price in GoldAPI response for %s: %s", metal, payload)
+            return None
 
-            return {"gold": gold_price, "silver": silver_price}
+        prices["gold" if metal == "XAU" else "silver"] = float(payload["price"])
 
-        except Exception as e:
-            print(f"⚠️ Attempt {attempt + 1} failed: {e}")
-            if attempt < retries - 1:
-                time.sleep(delay)
-
-    print("❌ All retries failed")
-    return None
+    return prices
